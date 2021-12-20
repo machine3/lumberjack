@@ -32,6 +32,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -111,8 +112,7 @@ type Logger struct {
 	file *os.File
 	mu   sync.Mutex
 
-	millCh    chan bool
-	startMill sync.Once
+	canMill int32
 }
 
 var (
@@ -373,25 +373,15 @@ func (l *Logger) millRunOnce() error {
 	return err
 }
 
-// millRun runs in a goroutine to manage post-rotation compression and removal
-// of old log files.
-func (l *Logger) millRun() {
-	for range l.millCh {
-		// what am I going to do, log this?
-		_ = l.millRunOnce()
-	}
-}
-
 // mill performs post-rotation compression and removal of stale log files,
 // starting the mill goroutine if necessary.
 func (l *Logger) mill() {
-	l.startMill.Do(func() {
-		l.millCh = make(chan bool, 1)
-		go l.millRun()
-	})
-	select {
-	case l.millCh <- true:
-	default:
+	// execute millRun if the lock can be obtained, otherwise ignore
+	if atomic.CompareAndSwapInt32(&l.canMill, 0, 1) {
+		go func() {
+			defer atomic.StoreInt32(&l.canMill, 0)
+			_ = l.millRunOnce()
+		}()
 	}
 }
 
